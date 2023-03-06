@@ -3,12 +3,27 @@ AddCSLuaFile()
 -- Создаем новую энтити и задаем ей модель
 DEFINE_BASECLASS( "base_anim" )
 
-ENT.PrintName = "Black Hole - Not Eating"
+ENT.PrintName = "Black Hole - Eating"
 ENT.Category = "Black Hole"
 
 ENT.Spawnable = true
-ENT.AdminOnly = false
+ENT.AdminOnly = true
+ENT.Editable = true
 ENT.RenderGroup = RENDERGROUP_TRANSLUCENT
+
+function ENT:SetupDataTables()
+    self:NetworkVar( "Float", 0, "BlackHoleSize", { KeyName = "BlackHoleSize", Edit = { type = "Float", min = 1, max = 1000, order = 1 } } )
+    if ( SERVER ) then
+        self:NetworkVarNotify( "BlackHoleSize", self.OnBallSizeChanged )
+    end
+end
+if ( SERVER ) then
+    function ENT:OnBallSizeChanged( varname, oldvalue, newvalue )
+        -- Do not rebuild if the size wasn't changed
+        if ( oldvalue == newvalue ) then return end
+        self.TargetAttractRadius = newvalue
+    end
+end
 
 -- Инициализация энтити
 function ENT:Initialize()
@@ -21,8 +36,8 @@ function ENT:Initialize()
 
     -- Задаем начальный радиус притяжения и силу притяжения
     self.AttractRadius = 0
-    self.TargetAttractRadius = 500
-    self.AttractStrength = 5000
+    self.TargetAttractRadius = 100
+    self.AttractStrength = 0
     self.refractMaterial = Material("models/props_c17/fisheyelens")
 
     self:RebuildPhysics()
@@ -33,6 +48,7 @@ function ENT:Initialize()
         phys:Wake()
     end
     self:SetNWInt("AttractRadius", self.AttractRadius)
+    self:SetBlackHoleSize(self.TargetAttractRadius)
     if CLIENT then
         local radius = self.AttractRadius
         local vOffset = self:GetPos()
@@ -60,7 +76,7 @@ function ENT:Initialize()
                     particle:SetDieTime( 2 )
                     particle:SetStartAlpha( 255 )
                     particle:SetEndAlpha( 0 )
-                    particle:SetStartSize( 5 )
+                    particle:SetStartSize( self:GetNWInt("AttractRadius") / 50 )
                     particle:SetEndSize( 0 )
                     --particle:SetRoll( math.Rand(0, 360) )
                     particle:SetRollDelta( 0 )
@@ -122,8 +138,7 @@ function ENT:Think()
             self:SetNWInt("AttractRadius", self.AttractRadius)
             self:RebuildPhysics()
             self:GetPhysicsObject():SetMass(self.AttractRadius)
-        end
-        if self.AttractStrength ~= self:GetNWInt("AttractStrength") then
+            self.AttractStrength = self.AttractRadius * .5
             self:SetNWInt("AttractStrength", self.AttractStrength)
         end
         -- Находим все объекты в заданном радиусе
@@ -141,22 +156,18 @@ function ENT:Think()
                 -- Задаем силу притяжения, которая затухает по мере отдаления от энтити
                 local force = direction:GetNormalized() * (self.AttractStrength * (self.AttractRadius - distance) / self.AttractRadius) + (Vector(0,0,-1) - direction:GetNormalized() * -600)
                 local dt = engine.TickInterval() 
-
                 if object:IsPlayer() then
-                    local act = object:GetActivity()
-                    if act < 48 && act > -2 && (act < 20 || act > 24) then
-                        object:SetVelocity( force * dt )
+                    if object:IsOnGround() then
+                        object:SetVelocity( force * dt + Vector(0,0,500) * ((self.AttractRadius - distance) / self.AttractRadius))
                     else
-                        object:SetVelocity( force * dt + object:GetVelocity() )
+                        object:SetVelocity( force * dt )
                     end
                 end
-
                 object:GetPhysicsObject():AddVelocity( force * dt )
             end
         end
-
         -- Задержка между обновлениями
-        self:NextThink(CurTime() + 0.01)
+        self:NextThink(CurTime() + 0.02)
     end
     return true
 end
@@ -167,26 +178,31 @@ if CLIENT then
         local event_horizon = Color(0, 127, 255, 55)
         local black_hole = Color(0, 0, 0, 255)
         local affection_radius = Color(255, 0, 0, 15)
+        local detail = 16
         --self:DrawModel()
+
+        self.refractMaterial:SetFloat( "$envmap", 0 )
+        self.refractMaterial:SetFloat( "$envmaptint", 0 )
+        self.refractMaterial:SetInt( "$ignorez", 1 )
 
         local baserad = self:GetNWInt("AttractRadius")
         local str = 0.5
 
         baserad = baserad * ((((math.sin(RealTime()) + 1) / 2) / 10 * str) + (1 - (str/10)))
 
-        for mul=64,33, -10 do
-            self.refractMaterial:SetFloat( "$refractamount", 1/(mul/4) )
+        for mul=64,33, -64 do
+            self.refractMaterial:SetFloat( "$refractamount", -(1/(mul/4)) )
             render.SetMaterial(self.refractMaterial)
-            render.DrawSphere(self:GetPos(), (baserad / 1000 * mul), 50, 50, event_horizon)
-            render.DrawSphere(self:GetPos(), -(baserad / 1000 * mul), 50, 50, event_horizon)
+            render.DrawSphere(self:GetPos(), (baserad / 1000 * mul), detail, detail, event_horizon)
+            render.DrawSphere(self:GetPos(), -(baserad / 1000 * mul), detail, detail, event_horizon)
         end
 
         render.SetColorMaterial()
-        render.DrawSphere(self:GetPos(), (baserad / 1000 * 64), 50, 50, event_horizon)
-        render.DrawSphere(self:GetPos(), (self:GetNWInt("AttractRadius")), 50, 50, affection_radius)
-        render.DrawSphere(self:GetPos(), (baserad / 1000 * 32), 50, 50, black_hole)
-        render.DrawSphere(self:GetPos(), -(baserad / 1000 * 64), 50, 50, event_horizon)
-        render.DrawSphere(self:GetPos(), -(self:GetNWInt("AttractRadius")), 50, 50, affection_radius)
-        render.DrawSphere(self:GetPos(), -(baserad / 1000 * 32), 50, 50, black_hole)
+        render.DrawSphere(self:GetPos(), (baserad / 1000 * 64), detail, detail, event_horizon)
+        render.DrawSphere(self:GetPos(), (self:GetNWInt("AttractRadius")), detail, detail, affection_radius)
+        render.DrawSphere(self:GetPos(), (baserad / 1000 * 32), detail, detail, black_hole)
+        render.DrawSphere(self:GetPos(), -(baserad / 1000 * 64), detail, detail, event_horizon)
+        render.DrawSphere(self:GetPos(), -(self:GetNWInt("AttractRadius")), detail, detail, affection_radius)
+        render.DrawSphere(self:GetPos(), -(baserad / 1000 * 32), detail, detail, black_hole)
     end
 end
